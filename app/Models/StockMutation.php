@@ -2,11 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToKoperasi;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class StockMutation extends Model
 {
+    use BelongsToKoperasi;
+
     public const UPDATED_AT = null;
 
     protected $fillable = [];

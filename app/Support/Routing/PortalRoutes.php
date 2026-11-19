@@ -16,8 +16,8 @@ final class PortalRoutes
     }
 
     /**
-     * Portal Pelanggan (landing page, katalog /toko/{koperasi}, keranjang, pesanan saya).
-     * Guest boleh baca katalog; aksi keranjang & checkout dilindungi middleware auth:customer.
+     * Portal Pelanggan (landing page, katalog /toko/{koperasi:slug}, keranjang, pesanan saya).
+     * Aksi keranjang, checkout, pesanan saya, dan pengaduan wajib memakai middleware 'auth:customer'.
      */
     public static function customer(Closure|string $routes): void
     {
@@ -28,23 +28,24 @@ final class PortalRoutes
 
     /**
      * Portal Internal Koperasi (Admin Koperasi & Kasir).
-     * Middleware resolver 'koperasi' (SetKoperasiContext) & scopeBindings() diaktifkan di Tahap 0.3.
+     * Wajib menggunakan guard 'auth:web' agar terisolasi penuh dari guard 'customer'.
      */
     public static function koperasi(Closure|string $routes): void
     {
-        Route::middleware(['web', 'auth'])
-            ->prefix('koperasi/{koperasi}')
+        Route::middleware(['web', 'auth:web', 'koperasi'])
+            ->prefix('koperasi/{koperasi:slug}')
             ->name('koperasi.')
+            ->scopeBindings()
             ->group($routes);
     }
 
     /**
      * Portal Super Admin Pusat.
-     * Middleware 'role:super_admin' & MFA diaktifkan di Tahap 0.3.
+     * Wajib menggunakan guard 'auth:web' agar terisolasi penuh dari guard 'customer'.
      */
     public static function pusat(Closure|string $routes): void
     {
-        Route::middleware(['web', 'auth'])
+        Route::middleware(['web', 'auth:web', 'role:super_admin'])
             ->prefix('pusat')
             ->name('pusat.')
             ->group($routes);
