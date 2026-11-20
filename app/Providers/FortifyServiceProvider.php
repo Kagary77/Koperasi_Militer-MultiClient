@@ -4,58 +4,75 @@ namespace App\Providers;
 
 use App\Actions\Fortify\CreateNewUser;
 use App\Actions\Fortify\ResetUserPassword;
-use Illuminate\Auth\Middleware\RequirePassword;
+use App\Models\User;
+use App\Support\Auth\LoginLockout;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
-use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Laravel\Fortify\Fortify;
-use Livewire\Livewire;
 
 class FortifyServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
         //
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
         $this->configureActions();
+        $this->configureAuthentication();
         $this->configureViews();
         $this->configureRateLimiting();
-        $this->configurePasswordConfirmation();
     }
 
-    /**
-     * Require a recent password confirmation for Livewire requests from pages that require one.
-     */
-    private function configurePasswordConfirmation(): void
-    {
-        Livewire::addPersistentMiddleware([
-            RequirePassword::class,
-        ]);
-    }
-
-    /**
-     * Configure Fortify actions.
-     */
     private function configureActions(): void
     {
         Fortify::resetUserPasswordsUsing(ResetUserPassword::class);
         Fortify::createUsersUsing(CreateNewUser::class);
     }
 
-    /**
-     * Configure Fortify views.
-     */
+    private function configureAuthentication(): void
+    {
+        Fortify::authenticateUsing(function (Request $request): User {
+            $lockout = app(LoginLockout::class);
+            $email = (string) $request->input(Fortify::username());
+
+            if ($lockout->isLocked($email)) {
+                throw ValidationException::withMessages([
+                    Fortify::username() => 'Akun terkunci sementara karena terlalu banyak percobaan gagal. Coba lagi dalam '.$lockout->minutesRemaining($email).' menit.',
+                ]);
+            }
+
+            $user = User::query()->with('koperasi')->where('email', $email)->first();
+
+            $koperasiValid = $user !== null && (
+                $user->role === 'super_admin'
+                || ($user->koperasi !== null && $user->koperasi->isActive())
+            );
+
+            if (
+                $user !== null
+                && $user->isActive()
+                && $koperasiValid
+                && Hash::check((string) $request->input('password'), $user->password)
+            ) {
+                $lockout->clear($email);
+
+                return $user;
+            }
+
+            $lockout->recordFailure($email);
+
+            throw ValidationException::withMessages([
+                Fortify::username() => 'Surel atau kata sandi tidak sesuai.',
+            ]);
+        });
+    }
+
     private function configureViews(): void
     {
         Fortify::loginView(fn () => view('pages::auth.login'));
@@ -67,9 +84,6 @@ class FortifyServiceProvider extends ServiceProvider
         Fortify::requestPasswordResetLinkView(fn () => view('pages::auth.forgot-password'));
     }
 
-    /**
-     * Configure rate limiting.
-     */
     private function configureRateLimiting(): void
     {
         RateLimiter::for('two-factor', function (Request $request) {
@@ -77,9 +91,7 @@ class FortifyServiceProvider extends ServiceProvider
         });
 
         RateLimiter::for('login', function (Request $request) {
-            $throttleKey = Str::transliterate(Str::lower($request->input(Fortify::username())).'|'.$request->ip());
-
-            return Limit::perMinute(5)->by($throttleKey);
+            return Limit::perMinute(20)->by($request->ip() ?? 'unknown');
         });
 
         RateLimiter::for('passkeys', function (Request $request) {
