@@ -2,8 +2,10 @@
 
 use Illuminate\Support\Facades\Route;
 
-Route::middleware(['auth', 'verified'])->group(function () {
-    Route::view('dashboard', 'dashboard')->name('dashboard');
-});
+Route::get('/home', fn () => redirect()->route('customer.landing'))->name('home');
+
+Route::view('dashboard', 'dashboard')
+    ->middleware(['auth:web', 'verified'])
+    ->name('dashboard');
 
 require __DIR__.'/settings.php';
