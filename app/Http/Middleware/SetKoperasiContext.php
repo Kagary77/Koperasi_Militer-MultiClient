@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Support\Tenancy\KoperasiContext;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
 
 final class SetKoperasiContext
@@ -29,10 +30,23 @@ final class SetKoperasiContext
 
         $user = $request->user('web');
 
+        if (! $user instanceof User) {
+            abort(403);
+        }
+
+        // UC-22 alur 3a: jika akun karyawan dinonaktifkan, akhiri sesi aktifnya segera.
+        if (! $user->isActive()) {
+            Auth::guard('web')->logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+
+            return redirect()
+                ->route('login')
+                ->withErrors(['email' => 'Akun Anda telah dinonaktifkan oleh Admin Koperasi.']);
+        }
+
         if (
-            ! $user instanceof User
-            || ! $user->isActive()
-            || ! in_array($user->role, ['admin_koperasi', 'kasir'], true)
+            ! in_array($user->role, ['admin_koperasi', 'kasir'], true)
             || (int) $user->koperasi_id !== (int) $koperasi->id
         ) {
             abort(403);

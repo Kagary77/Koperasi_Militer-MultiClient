@@ -36,7 +36,16 @@
                 @if ($user?->isAdminKoperasi())
                     <span class="mt-3 px-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Manajemen</span>
                     <span class="flex min-h-11 items-center px-3 text-slate-400">Produk &amp; Stok (Tahap 1.3)</span>
-                    <span class="flex min-h-11 items-center px-3 text-slate-400">Karyawan (Tahap 1.2)</span>
+                    <a
+                        href="{{ route('koperasi.employees.index', ['koperasi' => $koperasi->slug]) }}"
+                        @class([
+                            'flex min-h-11 items-center rounded-lg px-3 font-medium transition',
+                            'bg-slate-900 text-white dark:bg-white dark:text-slate-900' => request()->routeIs('koperasi.employees.*'),
+                            'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800' => ! request()->routeIs('koperasi.employees.*'),
+                        ])
+                    >
+                        Karyawan
+                    </a>
                     <span class="flex min-h-11 items-center px-3 text-slate-400">Pengaduan (Sprint 3)</span>
                     <span class="flex min-h-11 items-center px-3 text-slate-400">Laporan Penjualan (Sprint 3)</span>
                 @endif
