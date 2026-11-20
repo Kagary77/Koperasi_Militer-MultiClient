@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureMfaEnabled;
 use App\Http\Middleware\EnsureUserHasRole;
 use App\Http\Middleware\SetKoperasiContext;
 use App\Support\Routing\PortalRoutes;
@@ -23,6 +24,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => EnsureUserHasRole::class,
             'koperasi' => SetKoperasiContext::class,
+            'mfa' => EnsureMfaEnabled::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
