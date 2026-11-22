@@ -30,7 +30,17 @@
                     Dashboard
                 </a>
 
-                <span class="flex min-h-11 items-center px-3 text-slate-400">POS &amp; Shift Kasir (Sprint 2)</span>
+                <a
+                    href="{{ route('koperasi.pos.index', ['koperasi' => $koperasi->slug]) }}"
+                    @class([
+                        'flex min-h-11 items-center rounded-lg px-3 font-medium transition',
+                        'bg-slate-900 text-white dark:bg-white dark:text-slate-900' => request()->routeIs('koperasi.pos.index'),
+                        'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800' => ! request()->routeIs('koperasi.pos.index'),
+                    ])
+                >
+                    POS &amp; Shift Kasir
+                </a>
+
                 <span class="flex min-h-11 items-center px-3 text-slate-400">Pesanan Online (Sprint 3)</span>
 
                 <a
@@ -46,6 +56,16 @@
 
                 @if ($user?->isAdminKoperasi())
                     <span class="mt-3 px-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Manajemen</span>
+                    <a
+                        href="{{ route('koperasi.pos.voids', ['koperasi' => $koperasi->slug]) }}"
+                        @class([
+                            'flex min-h-11 items-center rounded-lg px-3 font-medium transition',
+                            'bg-slate-900 text-white dark:bg-white dark:text-slate-900' => request()->routeIs('koperasi.pos.voids'),
+                            'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800' => ! request()->routeIs('koperasi.pos.voids'),
+                        ])
+                    >
+                        Persetujuan Void
+                    </a>
                     <a
                         href="{{ route('koperasi.employees.index', ['koperasi' => $koperasi->slug]) }}"
                         @class([

@@ -26,6 +26,10 @@ return Application::configure(basePath: dirname(__DIR__))
             'koperasi' => SetKoperasiContext::class,
             'mfa' => EnsureMfaEnabled::class,
         ]);
+
+        $middleware->validateCsrfTokens(except: [
+            'webhooks/qris',
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
