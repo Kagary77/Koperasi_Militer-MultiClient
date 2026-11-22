@@ -2,9 +2,16 @@
 
 use App\Models\CashierShift;
 use App\Models\Koperasi;
+use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\User;
+use App\Modules\Payments\Contracts\PaymentGateway;
+use App\Modules\Payments\Exceptions\PaymentException;
+use App\Modules\Payments\Services\PaymentService;
+use App\Modules\Payments\Services\PaymentWebhookService;
+use App\Modules\Payments\Services\QrisImage;
+use App\Modules\Payments\Services\WebhookSignatureVerifier;
 use App\Modules\Pos\Exceptions\PosException;
 use App\Modules\Pos\Services\CashierShiftService;
 use App\Modules\Pos\Services\PosService;
@@ -12,6 +19,7 @@ use App\Modules\Pos\Services\PosVoidService;
 use App\Support\Tenancy\KoperasiContext;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 
@@ -45,6 +53,9 @@ new class extends Component
     public int $amountPaid = 0;
 
     public ?int $lastSaleId = null;
+
+    // Pembayaran QRIS Aktif
+    public ?int $activeQrisPaymentId = null;
 
     // Pengajuan Void oleh Kasir
     public ?int $voidingSaleId = null;
@@ -163,6 +174,36 @@ new class extends Component
         return Sale::query()->with('items')->find($this->lastSaleId);
     }
 
+    #[Computed]
+    public function activeQrisPayment(): ?Payment
+    {
+        if ($this->activeQrisPaymentId === null) {
+            return null;
+        }
+
+        return Payment::query()
+            ->where('koperasi_id', $this->koperasiId)
+            ->with('sale')
+            ->find($this->activeQrisPaymentId);
+    }
+
+    #[Computed]
+    public function activeQrisSvg(): ?string
+    {
+        $payment = $this->activeQrisPayment;
+        if ($payment === null || ! $payment->qris_payload) {
+            return null;
+        }
+
+        return app(QrisImage::class)->svg((string) $payment->qris_payload, 220);
+    }
+
+    #[Computed]
+    public function canSimulateSandboxQris(): bool
+    {
+        return app()->environment(['local', 'testing']) && app(PaymentGateway::class)->isSandbox();
+    }
+
     public function openShift(): void
     {
         $this->validate([
@@ -207,8 +248,8 @@ new class extends Component
                 'actual' => (int) $closed->actual_cash,
                 'difference' => (int) $closed->difference,
             ];
-            $this->reset(['showCloseShift', 'actualCash', 'cart', 'amountPaid', 'lastSaleId']);
-            unset($this->activeShift, $this->shiftSales);
+            $this->reset(['showCloseShift', 'actualCash', 'cart', 'amountPaid', 'lastSaleId', 'activeQrisPaymentId']);
+            unset($this->activeShift, $this->shiftSales, $this->activeQrisPayment);
             session()->flash('status', 'Shift kasir ditutup. Rekap kas tercatat.');
         } catch (PosException $e) {
             $this->addError('pos', $e->getMessage());
@@ -321,17 +362,71 @@ new class extends Component
             $this->lastSaleId = $sale->id;
             $this->cart = [];
             $this->amountPaid = 0;
-            unset($this->cartLines, $this->cartTotal, $this->products, $this->shiftSales, $this->lastSale);
 
-            session()->flash(
-                'status',
-                $sale->payment_method === 'cash'
-                    ? "Transaksi {$sale->invoice_number} lunas (Tunai). Kembalian: Rp ".number_format((int) $sale->change_amount, 0, ',', '.')
-                    : "Transaksi QRIS {$sale->invoice_number} dibuat (menunggu pembayaran QRIS).",
-            );
-        } catch (PosException $e) {
+            if ($sale->payment_method === 'qris') {
+                $payment = app(PaymentService::class)->initiateForSale($sale);
+                $this->activeQrisPaymentId = $payment->id;
+                unset($this->activeQrisPayment, $this->activeQrisSvg);
+                session()->flash('status', "QRIS dinamis {$sale->invoice_number} siap dipindai pembeli.");
+            } else {
+                $this->activeQrisPaymentId = null;
+                session()->flash(
+                    'status',
+                    "Transaksi {$sale->invoice_number} lunas (Tunai). Kembalian: Rp ".number_format((int) $sale->change_amount, 0, ',', '.'),
+                );
+            }
+
+            unset($this->cartLines, $this->cartTotal, $this->products, $this->shiftSales, $this->lastSale);
+        } catch (PosException|PaymentException $e) {
             $this->addError('pos', $e->getMessage());
         }
+    }
+
+    public function refreshQrisStatus(): void
+    {
+        $payment = $this->activeQrisPayment;
+        if ($payment === null) {
+            return;
+        }
+
+        $fresh = $payment->fresh(['sale']);
+        unset($this->activeQrisPayment, $this->activeQrisSvg, $this->shiftSales, $this->products, $this->lastSale);
+
+        if ($fresh !== null && $fresh->isSettled()) {
+            $this->activeQrisPaymentId = null;
+            session()->flash('status', "Pembayaran QRIS {$fresh->sale?->invoice_number} lunas dan stok telah diperbarui.");
+        }
+    }
+
+    public function simulateSandboxQrisSettlement(): void
+    {
+        abort_unless($this->canSimulateSandboxQris, 403);
+
+        $payment = $this->activeQrisPayment;
+        if ($payment === null || $payment->status !== 'pending') {
+            return;
+        }
+
+        $koperasi = app(KoperasiContext::class)->koperasi();
+        $secret = (string) ($koperasi->gateway_credentials['webhook_secret'] ?? '');
+
+        $payload = [
+            'event_id' => 'SBX-EVT-'.strtoupper(Str::random(12)),
+            'payment_reference' => $payment->payment_reference,
+            'status' => 'settled',
+            'amount' => (int) $payment->amount,
+        ];
+        $rawBody = (string) json_encode($payload);
+        $signature = app(WebhookSignatureVerifier::class)->sign($rawBody, $secret);
+
+        app(PaymentWebhookService::class)->handleWebhook($rawBody, $signature, $payload);
+        $this->refreshQrisStatus();
+    }
+
+    public function dismissQrisPanel(): void
+    {
+        $this->activeQrisPaymentId = null;
+        unset($this->activeQrisPayment, $this->activeQrisSvg);
     }
 
     public function startVoid(int $saleId): void
@@ -400,7 +495,6 @@ new class extends Component
     @endif
 
     @if ($this->activeShift === null)
-        {{-- Belum ada shift terbuka --}}
         <section class="mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <h2 class="text-lg font-bold">Buka Shift Kasir</h2>
             <p class="mt-1 text-sm text-slate-500">Masukkan modal awal uang tunai di laci kasir sebelum memulai transaksi POS.</p>
@@ -414,7 +508,6 @@ new class extends Component
             </form>
         </section>
     @else
-        {{-- Bar Status Shift Aktif --}}
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
             <div class="text-sm">
                 <span class="font-semibold text-emerald-700 dark:text-emerald-400">● Shift Aktif</span>
@@ -441,6 +534,34 @@ new class extends Component
             </section>
         @endif
 
+        {{-- Panel QRIS Dinamis Aktif (UC-08 & UC-09) --}}
+        @if ($this->activeQrisPayment)
+            <section
+                wire:poll.3s="refreshQrisStatus"
+                data-test="pos-qris-panel"
+                class="flex flex-col items-center gap-4 rounded-xl border-2 border-slate-900 bg-white p-6 text-center sm:flex-row sm:text-left dark:border-slate-200 dark:bg-slate-900"
+            >
+                <div class="rounded-xl border border-slate-200 bg-white p-3">
+                    {!! $this->activeQrisSvg !!}
+                </div>
+                <div class="flex-1 space-y-2">
+                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Pembayaran QRIS Dinamis</p>
+                    <p class="font-mono text-sm font-bold">{{ $this->activeQrisPayment->sale?->invoice_number }} · {{ $this->activeQrisPayment->payment_reference }}</p>
+                    <p class="text-2xl font-extrabold">Rp {{ number_format((int) $this->activeQrisPayment->amount, 0, ',', '.') }}</p>
+                    <p class="text-xs text-slate-500">
+                        Berlaku hingga {{ $this->activeQrisPayment->expired_at->setTimezone(config('app.display_timezone'))->format('H:i:s') }} WIB · Status: <strong class="uppercase">{{ $this->activeQrisPayment->status }}</strong>
+                    </p>
+                    <div class="flex flex-wrap justify-center gap-2 pt-2 sm:justify-start">
+                        <x-button type="button" variant="secondary" wire:click="refreshQrisStatus">Cek Status</x-button>
+                        @if ($this->canSimulateSandboxQris && $this->activeQrisPayment->status === 'pending')
+                            <x-button type="button" wire:click="simulateSandboxQrisSettlement">Simulasi Bayar QRIS (Sandbox)</x-button>
+                        @endif
+                        <x-button type="button" variant="secondary" wire:click="dismissQrisPanel">Tutup Panel</x-button>
+                    </div>
+                </div>
+            </section>
+        @endif
+
         {{-- Banner Transaksi Terakhir & Tombol Cetak Struk --}}
         @if ($this->lastSale)
             <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-800 dark:bg-emerald-950/30">
@@ -459,7 +580,7 @@ new class extends Component
             </div>
         @endif
 
-        {{-- Grid Terminal POS (Kiri: Scan/Produk, Kanan: Keranjang & Bayar) --}}
+        {{-- Grid Terminal POS --}}
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-12">
             <section class="space-y-4 lg:col-span-7">
                 <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -580,7 +701,7 @@ new class extends Component
                     @endif
 
                     <x-button type="button" wire:click="checkout" :disabled="$cart === []" class="w-full">
-                        {{ $paymentMethod === 'cash' ? 'Bayar Tunai & Selesai' : 'Buat Tagihan QRIS' }}
+                        {{ $paymentMethod === 'cash' ? 'Bayar Tunai & Selesai' : 'Tampilkan QRIS Dinamis' }}
                     </x-button>
                 </div>
             </section>
