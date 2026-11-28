@@ -2,25 +2,35 @@
 
 namespace App\Models;
 
+use Database\Factories\UserFactory;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
 use Laravel\Fortify\TwoFactorAuthenticatable;
+use Laravel\Passkeys\Contracts\PasskeyUser;
+use Laravel\Passkeys\PasskeyAuthenticatable;
 
-class User extends Authenticatable
+class User extends Authenticatable implements MustVerifyEmail, PasskeyUser
 {
-    use HasFactory, Notifiable, SoftDeletes, TwoFactorAuthenticatable;
+    /** @use HasFactory<UserFactory> */
+    use HasFactory, Notifiable, PasskeyAuthenticatable, SoftDeletes, TwoFactorAuthenticatable;
 
+    /**
+     * @var list<string>
+     */
     protected $fillable = [
         'name',
         'email',
         'password',
     ];
 
+    /**
+     * @var list<string>
+     */
     protected $hidden = [
         'password',
         'two_factor_secret',
@@ -29,6 +39,9 @@ class User extends Authenticatable
         'remember_token',
     ];
 
+    /**
+     * @return array<string, string>
+     */
     protected function casts(): array
     {
         return [
@@ -36,41 +49,8 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_active' => 'boolean',
             'mfa_secret' => 'encrypted',
+            'deleted_at' => 'datetime',
         ];
-    }
-
-    public function initials(): string
-    {
-        return Str::of($this->name)
-            ->explode(' ')
-            ->take(2)
-            ->map(fn ($word) => Str::substr($word, 0, 1))
-            ->implode('');
-    }
-
-    public function isActive(): bool
-    {
-        return (bool) $this->is_active;
-    }
-
-    public function hasRole(string $role): bool
-    {
-        return $this->role === $role && $this->isActive();
-    }
-
-    public function isSuperAdmin(): bool
-    {
-        return $this->hasRole('super_admin');
-    }
-
-    public function isAdminKoperasi(): bool
-    {
-        return $this->hasRole('admin_koperasi');
-    }
-
-    public function isKasir(): bool
-    {
-        return $this->hasRole('kasir');
     }
 
     public function koperasi(): BelongsTo
@@ -78,13 +58,32 @@ class User extends Authenticatable
         return $this->belongsTo(Koperasi::class);
     }
 
-    public function cashierShifts(): HasMany
+    public function isSuperAdmin(): bool
     {
-        return $this->hasMany(CashierShift::class);
+        return $this->role === 'super_admin';
     }
 
-    public function sales(): HasMany
+    public function isAdminKoperasi(): bool
     {
-        return $this->hasMany(Sale::class);
+        return $this->role === 'admin_koperasi';
+    }
+
+    public function isKasir(): bool
+    {
+        return $this->role === 'kasir';
+    }
+
+    public function isActive(): bool
+    {
+        return (bool) $this->is_active;
+    }
+
+    public function initials(): string
+    {
+        return Str::of($this->name)
+            ->explode(' ')
+            ->take(2)
+            ->map(fn (string $word): string => Str::substr($word, 0, 1))
+            ->implode('');
     }
 }
